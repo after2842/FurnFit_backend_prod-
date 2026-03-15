@@ -9,8 +9,6 @@ import { UserModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SupabaseModule } from './supabase/supabase.module';
-const supabaseDirectUrl = process.env.SUPABASE_DIRECT_URL;
-console.log(supabaseDirectUrl);
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -20,8 +18,6 @@ console.log(supabaseDirectUrl);
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        const url = configService.get('SUPABASE_DIRECT_URL');
-        console.log('Connecting to DB with URL:', url);
         return {
           type: 'postgres',
           url: configService.get('SUPABASE_DIRECT_URL'),

@@ -1,0 +1,22 @@
+# fly.toml — https://fly.io/docs/reference/configuration/
+# Run `fly launch` to generate your app name, then update this file.
+
+app = 'furnfit-api'
+primary_region = 'sjc' # San Jose — close to us-west-2 (AWS/Supabase)
+
+[build]
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[checks]
+  [checks.health]
+    port = 3001
+    type = 'http'
+    interval = '30s'
+    timeout = '5s'
+    path = '/'
