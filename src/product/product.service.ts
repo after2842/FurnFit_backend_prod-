@@ -9,6 +9,7 @@ import {
   BedrockRuntimeClient,
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import axios from 'axios';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -544,7 +545,13 @@ export class ProductService {
     });
 
     // 5. Call Nova Pro via Bedrock Converse
-    const bedrock = new BedrockRuntimeClient({ region: 'us-east-1' });
+    const bedrock = new BedrockRuntimeClient({
+      region: 'us-east-1',
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: 30_000,
+        socketTimeout: 120_000,
+      }),
+    });
 
     const command = new ConverseCommand({
       modelId: 'amazon.nova-pro-v1:0',

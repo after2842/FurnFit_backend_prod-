@@ -12,6 +12,7 @@ import {
   BedrockRuntimeClient,
   InvokeModelCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
 import { SupabaseService } from '../supabase/supabase.service';
@@ -28,7 +29,13 @@ export class UserService {
     private readonly supabaseService: SupabaseService,
   ) {
     this.s3Client = new S3Client({ region: 'us-west-2' });
-    this.bedrockClient = new BedrockRuntimeClient({ region: 'us-east-1' });
+    this.bedrockClient = new BedrockRuntimeClient({
+      region: 'us-east-1',
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: 30_000,
+        socketTimeout: 120_000,
+      }),
+    });
   }
 
   private async downloadImage(url: string): Promise<Buffer> {
@@ -362,27 +369,14 @@ REQUIRED JSON SCHEMA:
     if (!imageList.length) return { count: 0, message: 'No images found' };
 
     const BATCH_SIZE = 5;
-    const results: any[] = [];
 
+    // Split into chunks up front
+    const batches: { url: string }[][] = [];
     for (let i = 0; i < imageList.length; i += BATCH_SIZE) {
-      const batch = imageList.slice(i, i + BATCH_SIZE);
+      batches.push(imageList.slice(i, i + BATCH_SIZE));
+    }
 
-      // Download images and build content blocks
-      const imageContents: any[] = [];
-      for (let j = 0; j < batch.length; j++) {
-        const buf = await this.downloadImage(batch[j].url);
-        imageContents.push(
-          { text: `[Image ${j}] url: ${batch[j].url}` },
-          {
-            image: {
-              format: 'jpeg' as const,
-              source: { bytes: buf.toString('base64') },
-            },
-          },
-        );
-      }
-
-      const prompt = `You are a witty, warm fashion stylist and personal shopper.
+    const prompt = `You are a witty, warm fashion stylist and personal shopper.
 
 For each image, produce THREE things:
 
@@ -427,67 +421,93 @@ Respond ONLY with valid JSON. No markdown fences, no extra text.
   ]
 }`;
 
-      const body = {
-        messages: [
-          {
-            role: 'user',
-            content: [...imageContents, { text: prompt }],
+    // Process all batches in parallel
+    console.log(
+      `🧠 [Nova] Sending ${batches.length} batch(es) in parallel (${imageList.length} images total)...`,
+    );
+
+    const batchResults = await Promise.all(
+      batches.map(async (batch, batchIndex) => {
+        // Download images and build content blocks
+        const imageContents: any[] = [];
+        for (let j = 0; j < batch.length; j++) {
+          const buf = await this.downloadImage(batch[j].url);
+          imageContents.push(
+            { text: `[Image ${j}] url: ${batch[j].url}` },
+            {
+              image: {
+                format: 'jpeg' as const,
+                source: { bytes: buf.toString('base64') },
+              },
+            },
+          );
+        }
+
+        const body = {
+          messages: [
+            {
+              role: 'user',
+              content: [...imageContents, { text: prompt }],
+            },
+          ],
+          inferenceConfig: {
+            maxTokens: 2048,
+            temperature: 0.7,
           },
-        ],
-        inferenceConfig: {
-          maxTokens: 2048,
-          temperature: 0.7,
-        },
-      };
+        };
 
-      const command = new InvokeModelCommand({
-        modelId: 'amazon.nova-pro-v1:0',
-        contentType: 'application/json',
-        accept: 'application/json',
-        body: JSON.stringify(body),
-      });
+        const command = new InvokeModelCommand({
+          modelId: 'amazon.nova-pro-v1:0',
+          contentType: 'application/json',
+          accept: 'application/json',
+          body: JSON.stringify(body),
+        });
 
-      console.log(
-        `🧠 [Nova] Sending batch ${Math.floor(i / BATCH_SIZE) + 1} (${batch.length} images)...`,
-      );
-
-      const response = await this.bedrockClient.send(command);
-      const raw = JSON.parse(new TextDecoder().decode(response.body));
-      const text = raw?.output?.message?.content?.[0]?.text ?? '';
-
-      let parsed: any;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        console.error(
-          `Nova returned non-JSON for batch starting at index ${i}:`,
-          text,
+        console.log(
+          `🧠 [Nova] Batch ${batchIndex + 1}/${batches.length} (${batch.length} images) sent`,
         );
-        continue;
-      }
 
-      // Write each result to DB
-      if (Array.isArray(parsed.images)) {
-        for (const img of parsed.images) {
-          const { error: updateError } = await supabase
-            .from('users_profile_images')
-            .update({
-              recommendation: img.recommendation,
-              nice_words: img.nice_words,
-              reason: img.reason,
-            })
-            .eq('users_id', userId)
-            .eq('url', img.url);
+        const response = await this.bedrockClient.send(command);
+        const raw = JSON.parse(new TextDecoder().decode(response.body));
+        const text = raw?.output?.message?.content?.[0]?.text ?? '';
 
-          if (updateError) {
-            console.error(`Failed to update image ${img.url}:`, updateError);
-          } else {
-            results.push(img);
+        let parsed: any;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          console.error(
+            `Nova returned non-JSON for batch ${batchIndex + 1}:`,
+            text,
+          );
+          return [];
+        }
+
+        // Write each result to DB
+        const saved: any[] = [];
+        if (Array.isArray(parsed.images)) {
+          for (const img of parsed.images) {
+            const { error: updateError } = await supabase
+              .from('users_profile_images')
+              .update({
+                recommendation: img.recommendation,
+                nice_words: img.nice_words,
+                reason: img.reason,
+              })
+              .eq('users_id', userId)
+              .eq('url', img.url);
+
+            if (updateError) {
+              console.error(`Failed to update image ${img.url}:`, updateError);
+            } else {
+              saved.push(img);
+            }
           }
         }
-      }
-    }
+        return saved;
+      }),
+    );
 
+    const results = batchResults.flat();
     console.log(
       `✅ [Nova] Done. Updated ${results.length}/${imageList.length} images.`,
     );

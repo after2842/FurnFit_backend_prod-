@@ -1,8 +1,10 @@
-# fly.toml — https://fly.io/docs/reference/configuration/
-# Run `fly launch` to generate your app name, then update this file.
+# fly.toml app configuration file generated for furnfit-api on 2026-03-16T13:36:34-07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
 app = 'furnfit-api'
-primary_region = 'sjc' # San Jose — close to us-west-2 (AWS/Supabase)
+primary_region = 'sjc'
 
 [build]
 
@@ -20,3 +22,8 @@ primary_region = 'sjc' # San Jose — close to us-west-2 (AWS/Supabase)
     interval = '30s'
     timeout = '5s'
     path = '/'
+
+[[vm]]
+  memory = '2gb'
+  cpus = 2
+  memory_mb = 2048
